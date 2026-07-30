@@ -1,10 +1,13 @@
+import json
 import re
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
 LISTING_URL = "https://game.intel.com/us/giveaways/"
+POSTED_FILE = Path("posted.json")
 
 HEADERS = {
     "User-Agent": (
@@ -13,6 +16,19 @@ HEADERS = {
         "Chrome/138.0.0.0 Safari/537.36"
     )
 }
+
+
+def load_posted():
+    if not POSTED_FILE.exists():
+        return {"seen": []}
+
+    with POSTED_FILE.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_posted(data):
+    with POSTED_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
 def get_listing():
@@ -27,11 +43,8 @@ def get_listing():
         raise Exception("No giveaway found.")
 
     title = article.find("h2").get_text(strip=True)
-
     url = article.find("a", href=True)["href"]
-
     image = article.find("img")["src"]
-
     description = article.find("p").get_text(" ", strip=True)
 
     slug = url.rstrip("/").split("/")[-1]
@@ -53,39 +66,35 @@ def get_end_date(url):
 
     text = soup.get_text(" ", strip=True)
 
-    match = re.search(
-        r"Offer ends ([A-Za-z]+ \d{1,2}, \d{4})",
-        text,
-    )
+    match = re.search(r"Offer ends ([A-Za-z]+ \d{1,2}, \d{4})", text)
 
     if not match:
         raise Exception("End date not found.")
 
-    end_date = match.group(1)
-
-    end_dt = datetime.strptime(end_date, "%B %d, %Y")
-
-    return end_dt
+    return datetime.strptime(match.group(1), "%B %d, %Y")
 
 
 def main():
     giveaway = get_listing()
+    giveaway["end_date"] = get_end_date(giveaway["url"])
 
-    end_date = get_end_date(giveaway["url"])
+    data = load_posted()
+    seen = set(data["seen"])
 
-    print("=" * 60)
+    if giveaway["slug"] in seen:
+        print("Already posted.")
+        return
+
+    print("NEW GIVEAWAY FOUND!")
     print(giveaway["title"])
-    print()
-    print(giveaway["slug"])
-    print()
-    print(giveaway["url"])
-    print()
-    print(giveaway["image"])
-    print()
-    print(giveaway["description"])
-    print()
-    print(end_date)
-    print("=" * 60)
+
+    seen.add(giveaway["slug"])
+
+    save_posted({
+        "seen": sorted(seen)
+    })
+
+    print("posted.json updated.")
 
 
 if __name__ == "__main__":
