@@ -6,6 +6,8 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
+from config import WEBHOOK_URL, ROLE_ID
+
 LISTING_URL = "https://game.intel.com/us/giveaways/"
 POSTED_FILE = Path("posted.json")
 
@@ -73,6 +75,49 @@ def get_end_date(url):
 
     return datetime.strptime(match.group(1), "%B %d, %Y")
 
+def send_discord(giveaway):
+    timestamp = int(giveaway["end_date"].timestamp())
+
+    embed = {
+        "title": giveaway["title"],
+        "url": giveaway["url"],
+        "description": giveaway["description"],
+        "color": 0x0071C5,  # Intel blue
+        "image": {
+            "url": giveaway["image"]
+        },
+        "fields": [
+            {
+                "name": "Ends",
+                "value": f"<t:{timestamp}:F>\n<t:{timestamp}:R>",
+                "inline": True
+            },
+            {
+                "name": "Type",
+                "value": "Sweepstakes 🎟",
+                "inline": True
+            }
+        ],
+        "footer": {
+            "text": "Subho's Intel Gaming Informer"
+        }
+    }
+
+    payload = {
+        "content": f"<@&{ROLE_ID}>" if ROLE_ID else "",
+        "embeds": [embed]
+    }
+
+    response = requests.post(
+        WEBHOOK_URL,
+        json=payload,
+        timeout=30
+    )
+
+    response.raise_for_status()
+
+    print("Discord notification sent.")
+
 
 def main():
     giveaway = get_listing()
@@ -87,6 +132,8 @@ def main():
 
     print("NEW GIVEAWAY FOUND!")
     print(giveaway["title"])
+
+    send_discord(giveaway)
 
     seen.add(giveaway["slug"])
 
