@@ -18,21 +18,13 @@ soup = BeautifulSoup(response.text, "lxml")
 
 article = soup.find("article")
 
-if not article:
-    print("No giveaway found.")
-    exit()
+if article is None:
+    raise Exception("No giveaway found.")
 
 link = article.find("a", href=True)
-
 title = article.find("h2")
-if title:
-    title = title.get_text(strip=True)
-else:
-    title = "Unknown"
-
-url = link["href"] if link else "No URL"
 
 print("=" * 50)
-print("Title:", title)
-print("URL:", url)
+print("TITLE :", title.get_text(strip=True) if title else "Not found")
+print("URL   :", link["href"] if link else "Not found")
 print("=" * 50)
