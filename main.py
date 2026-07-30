@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 
 LISTING_URL = "https://game.intel.com/us/giveaways/"
 
-headers = {
+HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -14,58 +14,79 @@ headers = {
     )
 }
 
-# ------------------------
-# Listing page
-# ------------------------
 
-listing = requests.get(LISTING_URL, headers=headers, timeout=30)
-listing.raise_for_status()
+def get_listing():
+    response = requests.get(LISTING_URL, headers=HEADERS, timeout=30)
+    response.raise_for_status()
 
-soup = BeautifulSoup(listing.text, "lxml")
+    soup = BeautifulSoup(response.text, "lxml")
 
-article = soup.find("article")
+    article = soup.find("article")
 
-if article is None:
-    raise Exception("No giveaway found.")
+    if article is None:
+        raise Exception("No giveaway found.")
 
-title = article.find("h2").get_text(strip=True)
-url = article.find("a", href=True)["href"]
-image = article.find("img")["src"]
-description = article.find("p").get_text(" ", strip=True)
+    title = article.find("h2").get_text(strip=True)
 
-# ------------------------
-# Giveaway page
-# ------------------------
+    url = article.find("a", href=True)["href"]
 
-page = requests.get(url, headers=headers, timeout=30)
-page.raise_for_status()
+    image = article.find("img")["src"]
 
-detail = BeautifulSoup(page.text, "lxml")
+    description = article.find("p").get_text(" ", strip=True)
 
-text = detail.get_text(" ", strip=True)
+    slug = url.rstrip("/").split("/")[-1]
 
-match = re.search(
-    r"Offer ends ([A-Za-z]+ \d{1,2}, \d{4})",
-    text
-)
+    return {
+        "slug": slug,
+        "title": title,
+        "url": url,
+        "image": image,
+        "description": description,
+    }
 
-if not match:
-    raise Exception("End date not found.")
 
-end_date = match.group(1)
+def get_end_date(url):
+    response = requests.get(url, headers=HEADERS, timeout=30)
+    response.raise_for_status()
 
-end_dt = datetime.strptime(end_date, "%B %d, %Y")
+    soup = BeautifulSoup(response.text, "lxml")
 
-print("=" * 60)
-print("TITLE:")
-print(title)
-print()
+    text = soup.get_text(" ", strip=True)
 
-print("END DATE:")
-print(end_date)
-print()
+    match = re.search(
+        r"Offer ends ([A-Za-z]+ \d{1,2}, \d{4})",
+        text,
+    )
 
-print("DATETIME:")
-print(end_dt)
+    if not match:
+        raise Exception("End date not found.")
 
-print("=" * 60)
+    end_date = match.group(1)
+
+    end_dt = datetime.strptime(end_date, "%B %d, %Y")
+
+    return end_dt
+
+
+def main():
+    giveaway = get_listing()
+
+    end_date = get_end_date(giveaway["url"])
+
+    print("=" * 60)
+    print(giveaway["title"])
+    print()
+    print(giveaway["slug"])
+    print()
+    print(giveaway["url"])
+    print()
+    print(giveaway["image"])
+    print()
+    print(giveaway["description"])
+    print()
+    print(end_date)
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
