@@ -21,10 +21,47 @@ article = soup.find("article")
 if article is None:
     raise Exception("No giveaway found.")
 
-link = article.find("a", href=True)
-title = article.find("h2")
+# ------------------------
+# Title
+# ------------------------
 
-print("=" * 50)
-print("TITLE :", title.get_text(strip=True) if title else "Not found")
-print("URL   :", link["href"] if link else "Not found")
-print("=" * 50)
+title = article.find("h2")
+title = title.get_text(strip=True) if title else "Unknown"
+
+# ------------------------
+# URL
+# ------------------------
+
+link = article.find("a", href=True)
+url = link["href"] if link else ""
+
+# ------------------------
+# Image
+# ------------------------
+
+img = article.find("img")
+image = img["src"] if img else ""
+
+# ------------------------
+# Description
+# ------------------------
+
+description = article.find("p")
+description = description.get_text(" ", strip=True) if description else ""
+
+print("=" * 60)
+print("TITLE:")
+print(title)
+print()
+
+print("URL:")
+print(url)
+print()
+
+print("IMAGE:")
+print(image)
+print()
+
+print("DESCRIPTION:")
+print(description)
+print("=" * 60)
