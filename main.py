@@ -75,14 +75,19 @@ def get_end_date(url):
 
     return datetime.strptime(match.group(1), "%B %d, %Y")
 
+
 def send_discord(giveaway):
     timestamp = int(giveaway["end_date"].timestamp())
 
     embed = {
+        "author": {
+            "name": "Intel Gaming Access",
+            "url": LISTING_URL,
+            "icon_url": "https://file.garden/afbSsuts32dZ5wSl/Intel-logo-2022.png"
+        },
         "title": giveaway["title"],
         "url": giveaway["url"],
-        "description": giveaway["description"],
-        "color": 0x0071C5,  # Intel blue
+        "color": 0x0071C5,
         "image": {
             "url": giveaway["image"]
         },
@@ -99,7 +104,8 @@ def send_discord(giveaway):
             }
         ],
         "footer": {
-            "text": "Subho's Intel Gaming Informer"
+            "text": "Subho's Intel Gaming Informer",
+            "icon_url": "https://files.catbox.moe/qttqpy.png"
         }
     }
 
