@@ -35,9 +35,12 @@ jobs:
             echo '{"seen":[]}' > posted.json
           fi
 
-      - name: Run notifier
-        run: |
-          python main.py
+     - name: Run notifier
+       env:
+         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+         ROLE_ID: ${{ secrets.ROLE_ID }}
+       run: |
+         python main.py
 
       - name: Commit updated posted.json
         run: |
