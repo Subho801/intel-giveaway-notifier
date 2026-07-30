@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 
-URL = "https://game.intel.com/us/giveaways/"
+LISTING_URL = "https://game.intel.com/us/giveaways/"
 
 headers = {
     "User-Agent": (
@@ -11,57 +11,39 @@ headers = {
     )
 }
 
-response = requests.get(URL, headers=headers, timeout=30)
-response.raise_for_status()
+# ------------------------
+# Get listing page
+# ------------------------
 
-soup = BeautifulSoup(response.text, "lxml")
+listing = requests.get(LISTING_URL, headers=headers, timeout=30)
+listing.raise_for_status()
+
+soup = BeautifulSoup(listing.text, "lxml")
 
 article = soup.find("article")
 
 if article is None:
     raise Exception("No giveaway found.")
 
-# ------------------------
-# Title
-# ------------------------
+title = article.find("h2").get_text(strip=True)
+url = article.find("a", href=True)["href"]
 
-title = article.find("h2")
-title = title.get_text(strip=True) if title else "Unknown"
-
-# ------------------------
-# URL
-# ------------------------
-
-link = article.find("a", href=True)
-url = link["href"] if link else ""
-
-# ------------------------
-# Image
-# ------------------------
-
-img = article.find("img")
-image = img["src"] if img else ""
-
-# ------------------------
-# Description
-# ------------------------
-
-description = article.find("p")
-description = description.get_text(" ", strip=True) if description else ""
-
-print("=" * 60)
-print("TITLE:")
+print("Listing found:")
 print(title)
-print()
-
-print("URL:")
 print(url)
 print()
 
-print("IMAGE:")
-print(image)
-print()
+# ------------------------
+# Open giveaway page
+# ------------------------
 
-print("DESCRIPTION:")
-print(description)
+page = requests.get(url, headers=headers, timeout=30)
+page.raise_for_status()
+
+detail = BeautifulSoup(page.text, "lxml")
+
+text = detail.get_text("\n", strip=True)
+
+print("=" * 60)
+print(text[:5000])
 print("=" * 60)
