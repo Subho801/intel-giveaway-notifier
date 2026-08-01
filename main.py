@@ -2,6 +2,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from datetime import timezone
 
 import requests
 from bs4 import BeautifulSoup
@@ -31,7 +32,28 @@ def load_posted():
 def save_posted(data):
     with POSTED_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+DATA_FILE = Path("intel.json")
 
+
+def save_site_data(giveaway):
+    data = {
+        "source": "Intel Gaming Access",
+        "status": "active",
+        "title": giveaway["title"],
+        "url": giveaway["url"],
+        "image": giveaway["image"],
+        "description": giveaway["description"],
+        "type": "Sweepstakes",
+        "ends_at": giveaway["end_date"].replace(
+            tzinfo=timezone.utc
+        ).isoformat(),
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat()
+    }
+
+    with DATA_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 def get_listing():
     response = requests.get(LISTING_URL, headers=HEADERS, timeout=30)
@@ -128,6 +150,8 @@ def send_discord(giveaway):
 def main():
     giveaway = get_listing()
     giveaway["end_date"] = get_end_date(giveaway["url"])
+
+    save_site_data(giveaway)
 
     data = load_posted()
     seen = set(data["seen"])
