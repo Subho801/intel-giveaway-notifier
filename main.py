@@ -67,7 +67,12 @@ def get_listing():
         raise Exception("No giveaway found.")
 
     title = article.find("h2").get_text(strip=True)
-    url = article.find("a", href=True)["href"]
+    link = article.find("a", href=True)
+
+if not link:
+    continue
+
+url = link["href"]
     image = article.find("img")["src"]
     description = article.find("p").get_text(" ", strip=True)
 
