@@ -57,6 +57,25 @@ def save_site_data(giveaway):
         json.dump(data, f, indent=2)
 
 
+def save_no_active_giveaway():
+    data = {
+        "source": "Intel Gaming Access",
+        "status": "inactive",
+        "title": None,
+        "url": None,
+        "image": None,
+        "description": None,
+        "type": "Sweepstakes",
+        "ends_at": None,
+        "updated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+    with DATA_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
 def get_listing():
     print("Fetching Intel giveaway listing...")
 
@@ -70,46 +89,81 @@ def get_listing():
 
     soup = BeautifulSoup(response.text, "lxml")
 
-    # Find giveaway articles
     articles = soup.find_all("article")
 
     if not articles:
-        raise Exception("No giveaway articles found.")
+        print("No giveaway articles found.")
+        return None
 
     print(f"Found {len(articles)} article(s).")
 
     for article in articles:
 
-        # Find title
+        # ---------------------------------------------------------
+        # TITLE
+        # ---------------------------------------------------------
+
         title_tag = article.find("h2")
 
         if not title_tag:
-            print("⚠️ Skipping article: no title found.")
             continue
 
-        title = title_tag.get_text(strip=True)
+        title = title_tag.get_text(
+            " ",
+            strip=True
+        )
 
-        # Find link safely
-        link = article.find("a", href=True)
+        # ---------------------------------------------------------
+        # CHECK IF EXPIRED
+        # ---------------------------------------------------------
+
+        article_text = article.get_text(
+            " ",
+            strip=True
+        )
+
+        if re.search(
+            r"\bexpired\b",
+            article_text,
+            re.IGNORECASE
+        ):
+            print(
+                f"⏭️ Skipping expired giveaway: {title}"
+            )
+            continue
+
+        # ---------------------------------------------------------
+        # FIND LINK
+        # ---------------------------------------------------------
+
+        link = article.find(
+            "a",
+            href=True
+        )
 
         if not link:
-            print(f"\n========== ARTICLE HTML: {title} ==========")
-            print(article.prettify())
-            print("========== END ARTICLE HTML ==========\n")
+            print(
+                f"⚠️ Skipping '{title}': "
+                "no link found."
+            )
             continue
 
         url = link.get("href")
 
         if not url:
-            print(f"⚠️ Skipping '{title}': empty URL.")
             continue
 
         # Convert relative URL to absolute URL
         if url.startswith("/"):
             url = "https://game.intel.com" + url
 
-        # Find image safely
+        # ---------------------------------------------------------
+        # IMAGE
+        # ---------------------------------------------------------
+
         image_tag = article.find("img")
+
+        image = None
 
         if image_tag:
             image = (
@@ -117,17 +171,14 @@ def get_listing():
                 or image_tag.get("data-src")
                 or image_tag.get("data-lazy-src")
             )
-        else:
-            image = None
 
-        if not image:
-            print(f"⚠️ No image found for '{title}'.")
-
-        # Convert relative image URL to absolute URL
         if image and image.startswith("/"):
             image = "https://game.intel.com" + image
 
-        # Find description safely
+        # ---------------------------------------------------------
+        # DESCRIPTION
+        # ---------------------------------------------------------
+
         description_tag = article.find("p")
 
         if description_tag:
@@ -138,10 +189,15 @@ def get_listing():
         else:
             description = ""
 
-        # Generate slug
+        # ---------------------------------------------------------
+        # SLUG
+        # ---------------------------------------------------------
+
         slug = url.rstrip("/").split("/")[-1]
 
-        print(f"Found giveaway: {title}")
+        print()
+        print("ACTIVE GIVEAWAY FOUND!")
+        print(f"Title: {title}")
         print(f"URL: {url}")
 
         return {
@@ -152,7 +208,10 @@ def get_listing():
             "description": description,
         }
 
-    raise Exception("No valid Intel giveaway found.")
+    # No active giveaway
+    print()
+    print("No active Intel giveaways found.")
+    return None
 
 
 def get_end_date(url):
@@ -166,15 +225,19 @@ def get_end_date(url):
 
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "lxml")
+    soup = BeautifulSoup(
+        response.text,
+        "lxml"
+    )
 
     text = soup.get_text(
         " ",
         strip=True
     )
 
-    # Intel format:
+    # Example:
     # Offer ends September 30, 2026
+
     match = re.search(
         r"Offer ends ([A-Za-z]+ \d{1,2}, \d{4})",
         text,
@@ -198,9 +261,9 @@ def get_end_date(url):
 
 def send_discord(giveaway):
     timestamp = int(
-        giveaway["end_date"].replace(
-            tzinfo=timezone.utc
-        ).timestamp()
+        giveaway["end_date"]
+        .replace(tzinfo=timezone.utc)
+        .timestamp()
     )
 
     embed = {
@@ -243,7 +306,7 @@ def send_discord(giveaway):
         },
     }
 
-    # Only add image if one exists
+    # Add image only if available
     if giveaway.get("image"):
         embed["image"] = {
             "url": giveaway["image"]
@@ -276,37 +339,68 @@ def main():
 
     giveaway = get_listing()
 
+    # ---------------------------------------------------------
+    # NO ACTIVE GIVEAWAY
+    # ---------------------------------------------------------
+
+    if giveaway is None:
+        print("Intel currently has no active giveaway.")
+        save_no_active_giveaway()
+        print("intel.json updated.")
+        return
+
+    # ---------------------------------------------------------
+    # GET END DATE
+    # ---------------------------------------------------------
+
     giveaway["end_date"] = get_end_date(
         giveaway["url"]
     )
 
-    # Update website data every run
+    # ---------------------------------------------------------
+    # UPDATE WEBSITE DATA
+    # ---------------------------------------------------------
+
     save_site_data(giveaway)
 
     print("intel.json updated.")
 
-    # Load already posted giveaways
+    # ---------------------------------------------------------
+    # CHECK POSTED GIVEAWAYS
+    # ---------------------------------------------------------
+
     data = load_posted()
 
     seen = set(
         data.get("seen", [])
     )
 
-    # Check if already posted
     if giveaway["slug"] in seen:
         print("Already posted.")
         return
 
-    # New giveaway
+    # ---------------------------------------------------------
+    # NEW GIVEAWAY
+    # ---------------------------------------------------------
+
     print()
+    print("================================")
     print("NEW GIVEAWAY FOUND!")
     print(giveaway["title"])
     print(giveaway["url"])
+    print("================================")
+    print()
 
-    # Send Discord notification
+    # ---------------------------------------------------------
+    # SEND DISCORD
+    # ---------------------------------------------------------
+
     send_discord(giveaway)
 
-    # Mark as posted
+    # ---------------------------------------------------------
+    # MARK AS POSTED
+    # ---------------------------------------------------------
+
     seen.add(giveaway["slug"])
 
     save_posted(
