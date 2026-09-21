@@ -93,7 +93,9 @@ def get_listing():
         link = article.find("a", href=True)
 
         if not link:
-            print(f"⚠️ Skipping '{title}': no link found.")
+            print(f"\n========== ARTICLE HTML: {title} ==========")
+            print(article.prettify())
+            print("========== END ARTICLE HTML ==========\n")
             continue
 
         url = link.get("href")
