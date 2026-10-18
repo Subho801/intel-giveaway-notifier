@@ -1,7 +1,10 @@
+
+import html
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -9,31 +12,56 @@ from bs4 import BeautifulSoup
 from config import WEBHOOK_URL, ROLE_ID
 
 
+API_URL = (
+    "https://game.intel.com/us/wp-json/wp/v2/giveaways"
+    "?per_page=100"
+)
 LISTING_URL = "https://game.intel.com/us/giveaways/"
+
 POSTED_FILE = Path("posted.json")
 DATA_FILE = Path("intel.json")
-
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/138.0.0.0 Safari/537.36"
-    )
+    ),
+    "Accept": "application/json, text/html",
 }
+
+
+def get_session():
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    return session
 
 
 def load_posted():
     if not POSTED_FILE.exists():
         return {"seen": []}
 
-    with POSTED_FILE.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with POSTED_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict) and isinstance(
+            data.get("seen"), list
+        ):
+            return data
+
+        raise ValueError("Unexpected posted.json format")
+
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        # Do not silently reset history and repost old giveaways.
+        raise RuntimeError(
+            f"Could not safely load posted.json: {exc}"
+        ) from exc
 
 
 def save_posted(data):
     with POSTED_FILE.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def save_site_data(giveaway):
@@ -45,16 +73,12 @@ def save_site_data(giveaway):
         "image": giveaway["image"],
         "description": giveaway["description"],
         "type": "Sweepstakes",
-        "ends_at": giveaway["end_date"].replace(
-            tzinfo=timezone.utc
-        ).isoformat(),
-        "updated_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "ends_at": giveaway["end_date"].isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     with DATA_FILE.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def save_no_active_giveaway():
@@ -67,204 +91,254 @@ def save_no_active_giveaway():
         "description": None,
         "type": "Sweepstakes",
         "ends_at": None,
-        "updated_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     with DATA_FILE.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def get_listing():
-    print("Fetching Intel giveaway listing...")
+def clean_html(value):
+    if not value:
+        return ""
 
-    response = requests.get(
-        LISTING_URL,
-        headers=HEADERS,
-        timeout=30
-    )
+    return BeautifulSoup(
+        html.unescape(value),
+        "lxml",
+    ).get_text(" ", strip=True)
 
+
+def fetch_api_giveaways(session):
+    print("[Intel] Fetching giveaways from new API...")
+
+    response = session.get(API_URL, timeout=30)
+    response.raise_for_status()
+
+    records = response.json()
+
+    if not isinstance(records, list):
+        raise RuntimeError("Intel API returned an unexpected response.")
+
+    if not records:
+        raise RuntimeError(
+            "Intel API returned zero records; refusing to assume "
+            "that no giveaways exist."
+        )
+
+    print(f"[Intel] API returned {len(records)} record(s).")
+
+    return records
+
+
+def parse_end_date(page_text):
+    # Keep the original pattern and support common sweepstakes wording.
+    patterns = [
+        r"\bOffer\s+ends?\s*:?\s*"
+        r"([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+
+        r"\bSweepstakes\s+(?:ends?|closes?)\s*:?\s*"
+        r"([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+
+        r"\bGiveaway\s+(?:ends?|closes?)\s*:?\s*"
+        r"([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+
+        r"\b(?:Entry|Entries|Entry period)\s+"
+        r"(?:ends?|close|closes)\s*:?\s*"
+        r"([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+
+        r"\bEnds?\s+(?:on\s+)?"
+        r"([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, page_text, re.IGNORECASE)
+
+        if not match:
+            continue
+
+        date_string = re.sub(
+            r"\s+",
+            " ",
+            match.group(1).replace(",", ","),
+        ).strip()
+
+        for fmt in ("%B %d, %Y", "%B %d %Y"):
+            try:
+                parsed = datetime.strptime(date_string, fmt)
+                # A date without a time is treated as ending at
+                # 23:59:59 UTC on that date.
+                return datetime.combine(
+                    parsed.date(),
+                    time(23, 59, 59),
+                    tzinfo=timezone.utc,
+                )
+            except ValueError:
+                continue
+
+    return None
+
+
+def get_page_details(session, record):
+    title = clean_html(record.get("title", {}).get("rendered", ""))
+
+    url = record.get("link", "")
+
+    if not title or not url:
+        print("[Intel] Skipping record without title or URL.")
+        return None, "unknown"
+
+    # Only fetch pages hosted on the expected Intel website.
+    parsed_url = urlparse(url)
+
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.hostname != "game.intel.com"
+    ):
+        print(f"[Intel] Skipping unexpected URL: {url}")
+        return None, "unknown"
+
+    print(f"[Intel] Checking: {title}")
+
+    response = session.get(url, timeout=30)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "lxml")
 
-    articles = soup.find_all("article")
+    # Prefer the main page content to unrelated navigation/footer text.
+    main_content = (
+        soup.find("main")
+        or soup.find("article")
+        or soup.body
+        or soup
+    )
 
-    if not articles:
-        print("No giveaway articles found.")
-        return None
+    page_text = main_content.get_text(" ", strip=True)
 
-    print(f"Found {len(articles)} article(s).")
+    # Explicit indicators only; do not infer expiry from publication date.
+    expired_patterns = [
+        r"\bthis giveaway has ended\b",
+        r"\bthis sweepstakes has ended\b",
+        r"\bgiveaway is expired\b",
+        r"\bsweepstakes is expired\b",
+        r"\bentries are closed\b",
+        r"\bentry period has ended\b",
+    ]
 
-    for article in articles:
+    if any(
+        re.search(pattern, page_text, re.IGNORECASE)
+        for pattern in expired_patterns
+    ):
+        print(f"[Intel] Skipping ended giveaway: {title}")
+        return None, "expired"
 
-        # ---------------------------------------------------------
-        # TITLE
-        # ---------------------------------------------------------
+    end_date = parse_end_date(page_text)
 
-        title_tag = article.find("h2")
+    if end_date is None:
+        print(
+            f"[Intel] Cannot verify end date for '{title}'. "
+            "Skipping this record."
+        )
+        return None, "unknown"
 
-        if not title_tag:
-            continue
+    now = datetime.now(timezone.utc)
 
-        title = title_tag.get_text(
-            " ",
-            strip=True
+    if end_date <= now:
+        print(f"[Intel] Giveaway has ended: {title}")
+        return None, "expired"
+
+    yoast = record.get("yoast_head_json") or {}
+    images = yoast.get("og_image") or []
+
+    image = None
+
+    if images and isinstance(images[0], dict):
+        image = images[0].get("url")
+
+    if not image:
+        featured = soup.find("meta", property="og:image")
+        if featured:
+            image = featured.get("content")
+
+    description = clean_html(
+        record.get("excerpt", {}).get("rendered", "")
+    )
+
+    if not description:
+        description = clean_html(
+            record.get("content", {}).get("rendered", "")
         )
 
-        # ---------------------------------------------------------
-        # CHECK IF EXPIRED
-        # ---------------------------------------------------------
+    giveaway = {
+        "id": str(record.get("id", "")),
+        "slug": record.get("slug", ""),
+        "title": title,
+        "url": url,
+        "image": image,
+        "description": description,
+        "end_date": end_date,
+    }
 
-        article_text = article.get_text(
-            " ",
-            strip=True
+    print(f"[Intel] Verified active: {title}")
+    print(f"[Intel] Ends: {end_date.isoformat()}")
+
+    return giveaway, "active"
+
+
+def get_listing(session):
+    records = fetch_api_giveaways(session)
+
+    unknown_count = 0
+    expired_count = 0
+
+    # WordPress API returns newest records first by default.
+    for record in records:
+        title = clean_html(
+            record.get("title", {}).get("rendered", "")
         )
 
-        if re.search(
-            r"\bexpired\b",
-            article_text,
-            re.IGNORECASE
+        # Ignore obvious non-sweepstakes promotional articles.
+        if not re.search(
+            r"\b(sweepstakes|giveaway)\b",
+            title,
+            re.IGNORECASE,
         ):
-            print(
-                f"⏭️ Skipping expired giveaway: {title}"
-            )
+            print(f"[Intel] Skipping non-sweepstakes: {title}")
             continue
 
-        # ---------------------------------------------------------
-        # FIND LINK
-        # ---------------------------------------------------------
+        giveaway, status = get_page_details(session, record)
 
-        link = article.find(
-            "a",
-            href=True
+        if status == "active":
+            return giveaway
+
+        if status == "expired":
+            expired_count += 1
+        else:
+            unknown_count += 1
+
+    if unknown_count:
+        # We cannot claim there are no active giveaways if some
+        # pages could not be verified.
+        raise RuntimeError(
+            f"Could not verify {unknown_count} giveaway page(s). "
+            "Keeping intel.json unchanged to avoid a false inactive status."
         )
 
-        if not link:
-            print(
-                f"⚠️ Skipping '{title}': "
-                "no link found."
-            )
-            continue
+    print(
+        f"[Intel] No verified active giveaways. "
+        f"Ended records checked: {expired_count}"
+    )
 
-        url = link.get("href")
-
-        if not url:
-            continue
-
-        # Convert relative URL to absolute URL
-        if url.startswith("/"):
-            url = "https://game.intel.com" + url
-
-        # ---------------------------------------------------------
-        # IMAGE
-        # ---------------------------------------------------------
-
-        image_tag = article.find("img")
-
-        image = None
-
-        if image_tag:
-            image = (
-                image_tag.get("src")
-                or image_tag.get("data-src")
-                or image_tag.get("data-lazy-src")
-            )
-
-        if image and image.startswith("/"):
-            image = "https://game.intel.com" + image
-
-        # ---------------------------------------------------------
-        # DESCRIPTION
-        # ---------------------------------------------------------
-
-        description_tag = article.find("p")
-
-        if description_tag:
-            description = description_tag.get_text(
-                " ",
-                strip=True
-            )
-        else:
-            description = ""
-
-        # ---------------------------------------------------------
-        # SLUG
-        # ---------------------------------------------------------
-
-        slug = url.rstrip("/").split("/")[-1]
-
-        print()
-        print("ACTIVE GIVEAWAY FOUND!")
-        print(f"Title: {title}")
-        print(f"URL: {url}")
-
-        return {
-            "slug": slug,
-            "title": title,
-            "url": url,
-            "image": image,
-            "description": description,
-        }
-
-    # No active giveaway
-    print()
-    print("No active Intel giveaways found.")
     return None
 
 
-def get_end_date(url):
-    print(f"Fetching giveaway page: {url}")
-
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    soup = BeautifulSoup(
-        response.text,
-        "lxml"
-    )
-
-    text = soup.get_text(
-        " ",
-        strip=True
-    )
-
-    # Example:
-    # Offer ends September 30, 2026
-
-    match = re.search(
-        r"Offer ends ([A-Za-z]+ \d{1,2}, \d{4})",
-        text,
-        re.IGNORECASE
-    )
-
-    if not match:
-        raise Exception(
-            "End date not found on giveaway page."
-        )
-
-    date_string = match.group(1)
-
-    print(f"End date found: {date_string}")
-
-    return datetime.strptime(
-        date_string,
-        "%B %d, %Y"
-    )
-
-
 def send_discord(giveaway):
-    timestamp = int(
-        giveaway["end_date"]
-        .replace(tzinfo=timezone.utc)
-        .timestamp()
-    )
+    if not WEBHOOK_URL:
+        raise RuntimeError("WEBHOOK_URL is not configured.")
+
+    if not ROLE_ID:
+        print("[Intel] ROLE_ID is empty; no role will be mentioned.")
+
+    timestamp = int(giveaway["end_date"].timestamp())
 
     embed = {
         "author": {
@@ -275,13 +349,9 @@ def send_discord(giveaway):
                 "Intel-logo-2022.png"
             ),
         },
-
         "title": giveaway["title"],
-
         "url": giveaway["url"],
-
         "color": 0x0071C5,
-
         "fields": [
             {
                 "name": "Ends",
@@ -297,91 +367,59 @@ def send_discord(giveaway):
                 "inline": True,
             },
         ],
-
         "footer": {
             "text": "Subho's Intel Gaming Informer",
-            "icon_url": (
-                "https://files.catbox.moe/qttqpy.png"
-            ),
+            "icon_url": "https://files.catbox.moe/qttqpy.png",
         },
     }
 
-    # Add image only if available
     if giveaway.get("image"):
-        embed["image"] = {
-            "url": giveaway["image"]
-        }
+        embed["image"] = {"url": giveaway["image"]}
 
     payload = {
-        "content": (
-            f"<@&{ROLE_ID}>"
-            if ROLE_ID
-            else ""
-        ),
+        "content": f"<@&{ROLE_ID}>" if ROLE_ID else "",
         "embeds": [embed],
     }
 
-    print("Sending Discord notification...")
+    print("[Intel] Sending Discord notification...")
 
     response = requests.post(
         WEBHOOK_URL,
         json=payload,
-        timeout=30
+        timeout=30,
     )
-
     response.raise_for_status()
 
-    print("Discord notification sent.")
+    print("[Intel] Discord notification sent.")
 
 
 def main():
     print("=== Intel Giveaway Notifier ===")
 
-    giveaway = get_listing()
+    session = get_session()
+    posted_data = load_posted()
+    seen = set(str(item) for item in posted_data.get("seen", []))
 
-    # ---------------------------------------------------------
-    # NO ACTIVE GIVEAWAY
-    # ---------------------------------------------------------
+    # Fetch and verify before changing intel.json.
+    giveaway = get_listing(session)
 
     if giveaway is None:
-        print("Intel currently has no active giveaway.")
         save_no_active_giveaway()
-        print("intel.json updated.")
+        print("[Intel] intel.json updated: inactive.")
         return
-
-    # ---------------------------------------------------------
-    # GET END DATE
-    # ---------------------------------------------------------
-
-    giveaway["end_date"] = get_end_date(
-        giveaway["url"]
-    )
-
-    # ---------------------------------------------------------
-    # UPDATE WEBSITE DATA
-    # ---------------------------------------------------------
 
     save_site_data(giveaway)
+    print("[Intel] intel.json updated.")
 
-    print("intel.json updated.")
+    # Use the slug for compatibility with your existing history.
+    identifier = giveaway["slug"]
 
-    # ---------------------------------------------------------
-    # CHECK POSTED GIVEAWAYS
-    # ---------------------------------------------------------
+    if not identifier:
+        identifier = giveaway["id"]
 
-    data = load_posted()
-
-    seen = set(
-        data.get("seen", [])
-    )
-
-    if giveaway["slug"] in seen:
-        print("Already posted.")
+    if identifier in seen:
+        print("[Intel] Already posted; no duplicate notification.")
         return
-
-    # ---------------------------------------------------------
-    # NEW GIVEAWAY
-    # ---------------------------------------------------------
 
     print()
     print("================================")
@@ -391,26 +429,14 @@ def main():
     print("================================")
     print()
 
-    # ---------------------------------------------------------
-    # SEND DISCORD
-    # ---------------------------------------------------------
-
     send_discord(giveaway)
 
-    # ---------------------------------------------------------
-    # MARK AS POSTED
-    # ---------------------------------------------------------
+    seen.add(identifier)
 
-    seen.add(giveaway["slug"])
+    save_posted({"seen": sorted(seen)})
 
-    save_posted(
-        {
-            "seen": sorted(seen)
-        }
-    )
-
-    print("posted.json updated.")
-    print("Done!")
+    print("[Intel] posted.json updated.")
+    print("[Intel] Done!")
 
 
 if __name__ == "__main__":
